@@ -1,0 +1,19 @@
+{
+  "name": "zyjs8",
+  "version": "1.0.0",
+  "description": "GitHub proxy service with Express.js v5 - Git Clone & File Download",
+  "license": "GPL-3.0",
+  "author": "",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server-v5.js",
+    "dev": "node server-v5.js",
+    "test": "node -c server-v5.js && echo \"Syntax check passed\"",
+    "start-v4": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "ofetch": "^1.4.1"
+  }
+}
