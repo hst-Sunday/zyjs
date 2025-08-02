@@ -76,13 +76,34 @@ async function handleGitProxy(req, res, targetUrl) {
     
     // 对于 Git Smart HTTP 协议，需要特殊处理流式数据
     if (response._data) {
-      // ofetch 已经读取了数据
+      // ofetch 已经读取了数据，需要正确处理不同类型
+      console.log('响应数据类型:', typeof response._data, response._data.constructor.name);
+      
       if (Buffer.isBuffer(response._data)) {
         res.end(response._data);
       } else if (typeof response._data === 'string') {
         res.end(response._data, 'utf8');
-      } else {
+      } else if (response._data instanceof Blob) {
+        // 处理 Blob 类型
+        const arrayBuffer = await response._data.arrayBuffer();
+        res.end(Buffer.from(arrayBuffer));
+      } else if (response._data instanceof ArrayBuffer) {
+        // 处理 ArrayBuffer 类型
         res.end(Buffer.from(response._data));
+      } else if (response._data instanceof Uint8Array) {
+        // 处理 Uint8Array 类型
+        res.end(Buffer.from(response._data));
+      } else {
+        // 其他类型，尝试转换
+        console.warn('未知的响应数据类型，尝试转换:', typeof response._data);
+        try {
+          const arrayBuffer = await response._data.arrayBuffer();
+          res.end(Buffer.from(arrayBuffer));
+        } catch (conversionError) {
+          console.error('数据类型转换失败:', conversionError);
+          res.status(500).json({ error: '响应数据处理失败' });
+          return;
+        }
       }
     } else if (response.body) {
       // 流式处理
@@ -107,8 +128,13 @@ async function handleGitProxy(req, res, targetUrl) {
     }
   } catch (gitError) {
     console.error('Git代理错误:', gitError);
+    console.error('错误堆栈:', gitError.stack);
     if (!res.headersSent) {
-      res.status(500).json({ error: `Git代理失败: ${gitError.message}` });
+      if (gitError.code === 'ERR_INVALID_ARG_TYPE') {
+        res.status(500).json({ error: '响应数据类型处理错误，请检查服务器日志' });
+      } else {
+        res.status(500).json({ error: `Git代理失败: ${gitError.message}` });
+      }
     }
   }
 }
