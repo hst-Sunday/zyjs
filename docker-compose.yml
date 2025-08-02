@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  zyjs:
+    image: ghcr.io/hst-sunday/zyjs:latest
+    ports:
+      - "7998:7998"
+    environment:
+      - PORT=7998
+      - NODE_ENV=production
+    restart: unless-stopped
+    container_name: github-docker-proxy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:7998/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - zyjs-network
+
+  # 可选：使用预构建镜像而非本地构建
+  # github-docker-proxy:
+  #   image: ghcr.io/your-username/your-repo:latest
+  #   ports:
+  #     - "7998:7998"
+  #   environment:
+  #     - PORT=7998
+  #     - NODE_ENV=production
+  #   restart: unless-stopped
+  #   container_name: github-docker-proxy
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:7998/"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 40s
+  #   networks:
+  #     - proxy-network
+
+networks:
+  proxy-network:
+    driver: bridge
+
+# 可选：持久化数据卷（如需要缓存或日志）
+# volumes:
+#   proxy-cache:
+#   proxy-logs:
