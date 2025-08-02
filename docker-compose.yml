@@ -39,7 +39,7 @@ services:
   #     - proxy-network
 
 networks:
-  proxy-network:
+  zyjs-network:
     driver: bridge
 
 # 可选：持久化数据卷（如需要缓存或日志）
