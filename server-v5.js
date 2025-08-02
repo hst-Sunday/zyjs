@@ -5,7 +5,7 @@ const dockerProxy = require('./middleware/docker-proxy');
 const { getHomePage } = require('./utils/combined-homepage');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8088;
 
 app.use(express.raw({ type: '*/*', limit: '500mb' }));
 

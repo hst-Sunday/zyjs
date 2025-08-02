@@ -195,27 +195,96 @@ function buildDockerProxyHeaders(originalRequest, targetUrl, authToken = null) {
   return headers;
 }
 
-function buildDockerProxyResponse(response) {
+function buildDockerProxyResponse(response, dockerRequest = null, originalRequest = null) {
   const headers = {};
   
+  // 对于 Docker 协议，这些头信息至关重要
   const keepHeaders = [
     'content-type', 'content-length', 'docker-content-digest',
     'docker-distribution-api-version', 'etag', 'last-modified',
-    'cache-control', 'expires', 'accept-ranges', 'content-range'
+    'cache-control', 'expires', 'accept-ranges', 'content-range',
+    'content-encoding', 'transfer-encoding'
   ];
   
   for (const key of keepHeaders) {
     const value = response.headers.get(key);
     if (value) {
       headers[key] = value;
+      console.log(`Preserving header: ${key} = ${value}`);
     }
   }
   
+  // 特殊处理 Content-Length，遵循 Docker Registry v2 API 规范
+  const contentLength = response.headers.get('content-length');
+  const isHeadRequest = originalRequest && originalRequest.method === 'HEAD';
+  const isManifest = dockerRequest && dockerRequest.type === 'manifest';
+  const isBlob = dockerRequest && dockerRequest.type === 'blob';
+  
+  console.log('Content-Length processing:', {
+    contentLength,
+    isHeadRequest,
+    isManifest,
+    isBlob,
+    requestType: dockerRequest?.type
+  });
+  
+  if (contentLength) {
+    if (isHeadRequest) {
+      // HEAD 请求必须返回与 GET 请求相同的 Content-Length
+      if (isManifest || isBlob) {
+        // 对于 manifest 和 blob，确保 Content-Length 不为 0（除非真的是 0）
+        headers['content-length'] = contentLength;
+        console.log('HEAD request: preserving Content-Length =', contentLength);
+      } else {
+        headers['content-length'] = contentLength;
+      }
+    } else {
+      // 非-HEAD 请求的正常处理
+      headers['content-length'] = contentLength;
+      console.log('Non-HEAD request: preserving Content-Length =', contentLength);
+    }
+  } else if (isHeadRequest && response._data) {
+    // 如果 HEAD 请求没有 Content-Length 但有数据，计算实际大小
+    const dataSize = Buffer.isBuffer(response._data) ? response._data.length : 
+                    (typeof response._data === 'string' ? Buffer.byteLength(response._data, 'utf8') : 0);
+    if (dataSize > 0) {
+      headers['content-length'] = dataSize.toString();
+      console.log('HEAD request: calculated Content-Length =', dataSize);
+    }
+  }
+  
+  // 保留所有 Docker 相关的头信息
+  for (const [key, value] of response.headers.entries()) {
+    const lowerKey = key.toLowerCase();
+    if (lowerKey.startsWith('docker-') || lowerKey.startsWith('x-docker-') || 
+        lowerKey.startsWith('www-authenticate') || lowerKey.startsWith('location')) {
+      headers[key] = value;
+      console.log(`Preserving Docker header: ${key} = ${value}`);
+    }
+  }
+  
+  // 对于 blob 请求，确保关键头信息存在
+  if (isBlob) {
+    // Docker-Content-Digest 对 blob 非常重要
+    const dockerDigest = response.headers.get('docker-content-digest');
+    if (dockerDigest) {
+      headers['docker-content-digest'] = dockerDigest;
+      console.log('Blob: ensuring Docker-Content-Digest =', dockerDigest);
+    }
+    
+    // 对于 blob，确保 Accept-Ranges 头存在
+    const acceptRanges = response.headers.get('accept-ranges');
+    if (acceptRanges) {
+      headers['accept-ranges'] = acceptRanges;
+    }
+  }
+  
+  // CORS 支持
   headers['access-control-allow-origin'] = '*';
-  headers['access-control-allow-methods'] = 'GET, HEAD, OPTIONS';
-  headers['access-control-allow-headers'] = 'Authorization, Content-Type, Accept, Docker-Content-Digest';
-  headers['access-control-expose-headers'] = 'Docker-Content-Digest, Content-Length, Content-Type';
-  headers['x-docker-proxy'] = 'Express';
+  headers['access-control-allow-methods'] = 'GET, HEAD, OPTIONS, POST, PUT';
+  headers['access-control-allow-headers'] = '*';
+  headers['access-control-expose-headers'] = '*';
+  headers['x-docker-proxy'] = 'Express-ContentLength-Fixed';
   
   return headers;
 }
