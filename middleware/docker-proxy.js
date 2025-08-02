@@ -68,7 +68,8 @@ async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
     headers: headers,
     retry: 1,
     retryStatusCodes: [429, 500, 502, 503, 504],
-    timeout: 60000  // 增加超时时间
+    timeout: 60000,  // 增加超时时间
+    responseType: 'arrayBuffer'  // 获取原始二进制数据，避免JSON解析
   };
   
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -101,10 +102,11 @@ async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
       if (!authHeader) {
         console.log('No auth header from error, trying direct request for auth info');
         try {
-          const authResponse = await ofetch.raw(targetUrl, {
+          await ofetch.raw(targetUrl, {
             method: 'GET',
             headers: { 'User-Agent': requestConfig.headers['User-Agent'] || 'Docker/24.0.0' },
-            timeout: 10000
+            timeout: 10000,
+            responseType: 'arrayBuffer'
           });
         } catch (authError) {
           if (authError.response) {
@@ -165,7 +167,8 @@ async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
             response = await ofetch.raw(targetUrl, {
               method: req.method,
               headers: cleanHeaders,
-              timeout: 30000
+              timeout: 30000,
+              responseType: 'arrayBuffer'
             });
             console.log('GHCR clean anonymous access succeeded:', response.status);
           } catch (cleanError) {
@@ -182,7 +185,8 @@ async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
               response = await ofetch.raw(targetUrl, {
                 method: req.method,
                 headers: emptyAuthHeaders,
-                timeout: 30000
+                timeout: 30000,
+                responseType: 'arrayBuffer'
               });
               console.log('GHCR empty auth access succeeded:', response.status);
             } catch (emptyAuthError) {
@@ -303,7 +307,8 @@ async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
         method: req.method,
         headers: redirectHeaders,
         retry: 2,
-        timeout: 60000
+        timeout: 60000,
+        responseType: 'arrayBuffer'
       });
       
       console.log('Blob redirect response:', response.status, 'Content-Length:', response.headers.get('content-length'));
@@ -315,7 +320,8 @@ async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
         method: req.method,
         headers: redirectHeaders,
         retry: 2,
-        timeout: 30000
+        timeout: 30000,
+        responseType: 'arrayBuffer'
       });
       
       console.log('Non-blob redirect response:', response.status, 'Content-Length:', response.headers.get('content-length'));
@@ -342,10 +348,9 @@ async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
     
     if (dockerRequest.type === 'manifest') {
       // 对于 manifest HEAD 请求，确保 Content-Length 反映实际 manifest 大小
-      const actualContentLength = contentLength;
-      if (actualContentLength && actualContentLength !== '0') {
-        responseHeaders['content-length'] = actualContentLength;
-        console.log('HEAD manifest: preserving Content-Length =', actualContentLength);
+      if (contentLength && contentLength !== '0') {
+        responseHeaders['content-length'] = contentLength;
+        console.log('HEAD manifest: preserving Content-Length =', contentLength);
       } else {
         // 如果没有 Content-Length，但有 response._data，使用实际数据大小
         if (response._data) {
@@ -359,9 +364,9 @@ async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
       }
     } else if (dockerRequest.type === 'blob') {
       // 对于 blob HEAD 请求，确保 Content-Length 正确
-      if (actualContentLength && actualContentLength !== '0') {
-        responseHeaders['content-length'] = actualContentLength;
-        console.log('HEAD blob: preserving Content-Length =', actualContentLength);
+      if (contentLength && contentLength !== '0') {
+        responseHeaders['content-length'] = contentLength;
+        console.log('HEAD blob: preserving Content-Length =', contentLength);
       }
     }
   }
@@ -382,28 +387,37 @@ async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
       // HEAD 请求不返回 body，只返回 headers
       console.log('HEAD blob request: returning headers only');
       res.end();
-    } else if (response._data) {
-      // ofetch 已经读取了数据
+    } else {
+      // 处理 blob 数据 - 使用 arrayBuffer responseType 获取原始数据
+      console.log('Processing blob data using arrayBuffer response');
       let finalBuffer;
-      if (Buffer.isBuffer(response._data)) {
-        finalBuffer = response._data;
-      } else if (response._data instanceof ArrayBuffer) {
-        finalBuffer = Buffer.from(response._data);
-      } else if (response._data instanceof Uint8Array) {
-        finalBuffer = Buffer.from(response._data);
+      
+      if (response._data) {
+        console.log('Using response._data for blob');
+        if (response._data instanceof ArrayBuffer) {
+          finalBuffer = Buffer.from(response._data);
+        } else if (Buffer.isBuffer(response._data)) {
+          finalBuffer = response._data;
+        } else if (response._data instanceof Uint8Array) {
+          finalBuffer = Buffer.from(response._data);
+        } else {
+          console.error('Unexpected blob data type:', typeof response._data);
+          return res.status(500).json({ error: 'Unexpected blob data type' });
+        }
       } else {
+        // 备用方案：直接使用 arrayBuffer 方法
+        console.log('Fallback: using response.arrayBuffer() for blob');
         try {
-          const arrayBuffer = await response._data.arrayBuffer();
-          finalBuffer = Buffer.from(arrayBuffer);
-        } catch (conversionError) {
-          console.error('Blob data conversion failed:', conversionError);
-          res.status(500).json({ error: 'Blob data processing failed' });
-          return;
+          const buffer = await response.arrayBuffer();
+          finalBuffer = Buffer.from(buffer);
+        } catch (bufferError) {
+          console.error('Blob arrayBuffer fallback failed:', bufferError);
+          return res.status(500).json({ error: 'Blob processing failed' });
         }
       }
       
       actualDataSize = finalBuffer.length;
-      console.log('Blob _data size:', actualDataSize, 'expected:', expectedLength);
+      console.log('Blob data size:', actualDataSize, 'expected:', expectedLength);
       
       // containerd 兼容性：如果实际大小与 Content-Length 不匹配，更新 header
       if (expectedLength === 0 && actualDataSize > 0) {
@@ -417,64 +431,58 @@ async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
       }
       
       res.end(finalBuffer);
-    } else if (response.body) {
-      // 流式处理 blob 数据，同时验证大小
-      console.log('Using streaming for blob data with size validation');
-      try {
-        const reader = response.body.getReader();
-        const chunks = [];
-        let totalSize = 0;
-        
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-          totalSize += value.length;
-        }
-        
-        console.log('Blob streaming complete, total size:', totalSize, 'expected:', expectedLength);
-        
-        // containerd 兼容性检查
-        if (expectedLength === 0 && totalSize > 0) {
-          console.log('Fixing zero Content-Length from streaming for containerd compatibility');
-          res.set('content-length', totalSize.toString());
-        } else if (expectedLength !== totalSize && totalSize > 0) {
-          console.log(`Streaming size mismatch: expected ${expectedLength}, actual ${totalSize}. Using actual size.`);
-          res.set('content-length', totalSize.toString());
-        }
-        
-        const finalBuffer = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)));
-        res.end(finalBuffer);
-        reader.releaseLock();
-      } catch (streamError) {
-        console.error('Blob streaming failed:', streamError);
-        res.status(500).json({ error: 'Blob streaming failed' });
-      }
-    } else {
-      console.log('No blob data available');
-      if (req.method === 'HEAD') {
-        res.end();
-      } else {
-        res.status(404).json({ error: 'Blob data not found' });
-      }
+      console.log('Blob transmission completed');
     }
   } else {
-    // 非-blob 请求的处理逻辑
+    // 非-blob 请求的处理逻辑（manifest, 等）
     if (req.method === 'HEAD') {
       // HEAD 请求不返回 body
+      console.log('HEAD request: ending without body');
       res.end();
-    } else if (response.body && typeof response.body.pipe === 'function') {
-      response.body.pipe(res);
-    } else if (response._data) {
-      res.send(response._data);
     } else {
-      try {
-        const buffer = await response.arrayBuffer();
-        res.send(Buffer.from(buffer));
-      } catch (bufferError) {
-        console.error('Response buffer processing failed:', bufferError);
-        res.end();
+      // GET/POST 请求需要完整的响应体
+      console.log('Processing response body for', dockerRequest.type, 'request');
+      
+      // 处理响应体数据 - 使用 arrayBuffer responseType 获取原始数据
+      let finalBuffer;
+      let dataSize = 0;
+      
+      if (response._data) {
+        // responseType: 'arrayBuffer' 应该将数据存储在 _data 中
+        console.log('Using response._data (arrayBuffer)');
+        if (response._data instanceof ArrayBuffer) {
+          finalBuffer = Buffer.from(response._data);
+        } else if (Buffer.isBuffer(response._data)) {
+          finalBuffer = response._data;
+        } else {
+          console.error('Unexpected response._data type:', typeof response._data);
+          finalBuffer = Buffer.from(String(response._data), 'utf8');
+        }
+        dataSize = finalBuffer.length;
+      } else {
+        // 备用方案：直接使用 arrayBuffer 方法
+        console.log('Fallback: using response.arrayBuffer()');
+        try {
+          const buffer = await response.arrayBuffer();
+          finalBuffer = Buffer.from(buffer);
+          dataSize = finalBuffer.length;
+        } catch (bufferError) {
+          console.error('ArrayBuffer fallback failed:', bufferError);
+          return res.status(500).json({ error: 'Response processing failed' });
+        }
       }
+      
+      console.log('Response data size:', dataSize, 'expected:', expectedLength);
+      
+      // 验证数据完整性
+      if (expectedLength > 0 && dataSize !== expectedLength) {
+        console.log(`Data size mismatch: expected ${expectedLength}, got ${dataSize}. Updating Content-Length.`);
+        // 更新 Content-Length 以匹配实际数据
+        res.set('content-length', dataSize.toString());
+      }
+      
+      res.end(finalBuffer);
+      console.log('Response data transmission completed');
     }
   }
 }
