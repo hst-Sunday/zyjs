@@ -35,13 +35,20 @@ async function dockerProxy(req, res, next) {
 async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
   const isBlob = dockerRequest.type === 'blob';
   
+  console.log('Docker request details:', {
+    method: req.method,
+    targetUrl,
+    dockerRequest,
+    userAgent: req.get('user-agent')
+  });
+  
   let headers = buildDockerProxyHeaders(req, targetUrl, null);
   let requestConfig = {
     method: req.method,
     headers: headers,
     retry: 1,
     retryStatusCodes: [429, 500, 502, 503, 504],
-    timeout: 30000
+    timeout: 60000  // 增加超时时间
   };
   
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -50,23 +57,52 @@ async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
   
   let response = await ofetch.raw(targetUrl, requestConfig);
   
+  // 处理 401 未授权错误
   if (response.status === 401) {
+    console.log('401 Unauthorized for', dockerRequest.registry, 'repository:', dockerRequest.repository);
     const authHeader = response.headers.get('www-authenticate');
-    if (authHeader && authHeader.includes('Bearer')) {
-      console.log('401 Auth required for', dockerRequest.registry, 'repository:', dockerRequest.repository);
+    console.log('WWW-Authenticate header:', authHeader);
+    
+    if (authHeader && (authHeader.includes('Bearer') || authHeader.includes('bearer'))) {
+      console.log('Bearer authentication required for', dockerRequest.registry);
       
       const authParams = parseAuthenticateHeader(authHeader);
-      console.log('Auth params:', authParams);
+      console.log('Parsed auth params:', authParams);
       
+      // 尝试获取 token
       const token = await getRegistryToken(dockerRequest.registry, dockerRequest.repository, authParams);
       if (token) {
-        console.log('Got token for', dockerRequest.registry, ', retrying request');
+        console.log('Successfully got token for', dockerRequest.registry, ', retrying request');
         headers = buildDockerProxyHeaders(req, targetUrl, token);
         requestConfig.headers = headers;
-        response = await ofetch.raw(targetUrl, requestConfig);
+        try {
+          response = await ofetch.raw(targetUrl, requestConfig);
+          console.log('Retry with token result:', response.status);
+        } catch (retryError) {
+          console.error('Retry with token failed:', retryError.message);
+        }
       } else {
-        console.log('Failed to get token for', dockerRequest.registry);
+        console.log('Failed to get token for', dockerRequest.registry, ', trying anonymous access');
+        // 对于公共仓库，尝试匿名访问
+        if (dockerRequest.repository && !dockerRequest.repository.includes('private')) {
+          console.log('Attempting anonymous access for public repository');
+          // 移除所有认证头信息，尝试匿名访问
+          const anonHeaders = buildDockerProxyHeaders(req, targetUrl, null);
+          delete anonHeaders['authorization'];
+          delete anonHeaders['Authorization'];
+          try {
+            response = await ofetch.raw(targetUrl, {
+              ...requestConfig,
+              headers: anonHeaders
+            });
+            console.log('Anonymous access result:', response.status);
+          } catch (anonError) {
+            console.error('Anonymous access failed:', anonError.message);
+          }
+        }
       }
+    } else {
+      console.log('No Bearer auth header found, response will return 401');
     }
   }
   

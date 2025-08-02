@@ -13,8 +13,18 @@ const REGISTRY_AUTH_CONFIGS = {
     scope_template: 'repository:{repository}:pull'
   },
   'ghcr.io': {
-    auth_url: 'https://ghcr.io/token',
-    service: 'ghcr.io',
+    auth_url: 'https://github.com/token',
+    service: 'ghcr.io', 
+    scope_template: 'repository:{repository}:pull'
+  },
+  'quay.io': {
+    auth_url: 'https://quay.io/v2/auth',
+    service: 'quay.io',
+    scope_template: 'repository:{repository}:pull'
+  },
+  'gcr.io': {
+    auth_url: 'https://gcr.io/v2/token',
+    service: 'gcr.io',
     scope_template: 'repository:{repository}:pull'
   }
 };
@@ -78,18 +88,25 @@ function parseDockerRequest(pathname) {
 }
 
 function parseRepositoryRegistry(repository) {
+  console.log('Parsing repository:', repository);
   const parts = repository.split('/');
   
+  // 处理包含注册表域名的情况 (如 ghcr.io/user/repo)
   if (parts.length > 1 && parts[0].includes('.')) {
     const registry = parts[0];
     const repo = parts.slice(1).join('/');
+    console.log('Detected registry:', registry, 'repo:', repo);
     return { registry: registry, repository: repo };
   }
   
+  // 处理单一名称的镜像 (如 nginx)
   if (!repository.includes('/')) {
+    console.log('Single name image, using docker.io/library');
     return { registry: 'docker.io', repository: 'library/' + repository };
   }
   
+  // 默认使用 docker.io
+  console.log('Default to docker.io for repository:', repository);
   return { registry: 'docker.io', repository: repository };
 }
 
