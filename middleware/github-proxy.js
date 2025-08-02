@@ -53,9 +53,9 @@ async function handleGitProxy(req, res, targetUrl) {
   const requestConfig = {
     method: req.method,
     headers: headers,
-    retry: 2,
+    retry: 3,
     retryStatusCodes: [429, 500, 502, 503, 504],
-    timeout: 30000
+    timeout: 120000
   };
   
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -64,22 +64,52 @@ async function handleGitProxy(req, res, targetUrl) {
   
   console.log('Git代理请求:', req.method, targetUrl);
   
-  const response = await ofetch.raw(targetUrl, requestConfig);
-  
-  console.log('GitHub响应:', response.status, response.headers.get('content-type'));
-  
-  const responseHeaders = buildGitProxyResponse(response);
-  
-  res.status(response.status);
-  res.set(responseHeaders);
-  
-  if (response.body && typeof response.body.pipe === 'function') {
-    response.body.pipe(res);
-  } else if (response._data) {
-    res.send(response._data);
-  } else {
-    const buffer = await response.arrayBuffer();
-    res.send(Buffer.from(buffer));
+  try {
+    const response = await ofetch.raw(targetUrl, requestConfig);
+    
+    console.log('GitHub Git响应:', response.status, response.headers.get('content-type'), 'Content-Length:', response.headers.get('content-length'));
+    
+    const responseHeaders = buildGitProxyResponse(response);
+    
+    res.status(response.status);
+    res.set(responseHeaders);
+    
+    // 对于 Git Smart HTTP 协议，需要特殊处理流式数据
+    if (response._data) {
+      // ofetch 已经读取了数据
+      if (Buffer.isBuffer(response._data)) {
+        res.end(response._data);
+      } else if (typeof response._data === 'string') {
+        res.end(response._data, 'utf8');
+      } else {
+        res.end(Buffer.from(response._data));
+      }
+    } else if (response.body) {
+      // 流式处理
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(value);
+        }
+        res.end();
+      } catch (streamError) {
+        console.error('Git流式传输错误:', streamError);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Git流式传输失败' });
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    } else {
+      res.end();
+    }
+  } catch (gitError) {
+    console.error('Git代理错误:', gitError);
+    if (!res.headersSent) {
+      res.status(500).json({ error: `Git代理失败: ${gitError.message}` });
+    }
   }
 }
 
@@ -91,7 +121,7 @@ async function handleFileProxy(req, res, targetUrl) {
     headers: headers,
     retry: 3,
     retryStatusCodes: [429, 500, 502, 503, 504],
-    timeout: 60000
+    timeout: 90000
   };
   
   console.log('文件代理请求:', req.method, targetUrl);
