@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   zyjs:
     image: ghcr.io/hst-sunday/zyjs:latest

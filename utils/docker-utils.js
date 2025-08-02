@@ -221,18 +221,34 @@ function buildDockerProxyResponse(response) {
 }
 
 function parseAuthenticateHeader(authHeader) {
+  console.log('Parsing auth header:', authHeader);
   const params = {};
-  if (!authHeader) return params;
   
-  const bearerMatch = authHeader.match(/Bearer\s+(.+)/i);
-  if (bearerMatch) {
-    const paramString = bearerMatch[1];
-    const paramMatches = paramString.matchAll(/(\w+)="([^"]+)"/g);
-    for (const match of paramMatches) {
-      params[match[1]] = match[2];
-    }
+  if (!authHeader) {
+    console.log('No auth header provided');
+    return params;
   }
   
+  // 处理 Bearer 认证
+  const bearerMatch = authHeader.match(/Bearer\s+(.+)/i);
+  if (!bearerMatch) {
+    console.log('No Bearer token found in auth header');
+    return params;
+  }
+  
+  const paramString = bearerMatch[1];
+  console.log('Parsing param string:', paramString);
+  
+  // 更健壮的参数解析，支持带引号和不带引号的值
+  const paramMatches = paramString.matchAll(/(\w+)=("([^"]+)"|([^,\s]+))/g);
+  for (const match of paramMatches) {
+    const key = match[1];
+    const value = match[3] || match[4]; // 带引号的值或不带引号的值
+    params[key] = value;
+    console.log('Parsed param:', key, '=', value);
+  }
+  
+  console.log('Final parsed params:', params);
   return params;
 }
 

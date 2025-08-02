@@ -55,12 +55,59 @@ async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
     requestConfig.body = req.body;
   }
   
-  let response = await ofetch.raw(targetUrl, requestConfig);
+  let response;
+  let authRequired = false;
+  let authHeader = null;
   
-  // 处理 401 未授权错误
-  if (response.status === 401) {
+  // 先尝试发起请求，捕获 401 异常
+  try {
+    response = await ofetch.raw(targetUrl, requestConfig);
+  } catch (error) {
+    console.log('Initial request failed:', error.message);
+    
+    // 检查是否是 401 错误
+    if (error.status === 401 || error.message.includes('401') || error.message.includes('Unauthorized')) {
+      console.log('Detected 401 error in exception');
+      authRequired = true;
+      
+      // 尝试从错误对象中提取响应信息
+      if (error.response) {
+        authHeader = error.response.headers?.get?.('www-authenticate') || 
+                    error.response.headers?.['www-authenticate'];
+        console.log('Extracted auth header from error:', authHeader);
+      }
+      
+      // 如果没有从错误中获取到，尝试直接请求获取认证信息
+      if (!authHeader) {
+        console.log('No auth header from error, trying direct request for auth info');
+        try {
+          const authResponse = await ofetch.raw(targetUrl, {
+            method: 'GET',
+            headers: { 'User-Agent': requestConfig.headers['User-Agent'] || 'Docker/24.0.0' },
+            timeout: 10000
+          });
+        } catch (authError) {
+          if (authError.response) {
+            authHeader = authError.response.headers?.get?.('www-authenticate') || 
+                        authError.response.headers?.['www-authenticate'];
+            console.log('Got auth header from auth request:', authHeader);
+          }
+        }
+      }
+    } else {
+      // 非 401 错误，直接抛出
+      throw error;
+    }
+  }
+  
+  // 处理 401 未授权错误 (无论是响应还是异常)
+  if ((response && response.status === 401) || authRequired) {
     console.log('401 Unauthorized for', dockerRequest.registry, 'repository:', dockerRequest.repository);
-    const authHeader = response.headers.get('www-authenticate');
+    
+    // 优先使用从响应中获取的 auth header
+    if (!authHeader && response) {
+      authHeader = response.headers.get('www-authenticate');
+    }
     console.log('WWW-Authenticate header:', authHeader);
     
     if (authHeader && (authHeader.includes('Bearer') || authHeader.includes('bearer'))) {
