@@ -145,18 +145,41 @@ async function handleDockerRequest(req, res, targetUrl, dockerRequest) {
             console.log('Anonymous access result:', response.status);
           } catch (anonError) {
             console.error('Anonymous access failed:', anonError.message);
+            // 如果匿名访问也失败，返回 401 错误
+            return res.status(401).json({ 
+              error: 'Authentication required and failed',
+              registry: dockerRequest.registry,
+              repository: dockerRequest.repository
+            });
           }
         }
       }
     } else {
       console.log('No Bearer auth header found, response will return 401');
+      // 没有 Bearer 认证头，返回 401
+      return res.status(401).json({
+        error: 'No Bearer authentication found',
+        registry: dockerRequest.registry,
+        repository: dockerRequest.repository
+      });
     }
+  }
+  
+  // 确保 response 对象存在
+  if (!response) {
+    console.error('No response object available after authentication attempts');
+    return res.status(500).json({
+      error: 'Internal server error: no response available',
+      registry: dockerRequest.registry,
+      repository: dockerRequest.repository
+    });
   }
   
   let redirectCount = 0;
   const maxRedirects = 5;
   
-  while ((response.status === 307 || response.status === 302) && redirectCount < maxRedirects) {
+  // 确保 response 存在且有 status 属性
+  while (response && (response.status === 307 || response.status === 302) && redirectCount < maxRedirects) {
     const redirectUrl = response.headers.get('location');
     if (!redirectUrl) {
       break;
